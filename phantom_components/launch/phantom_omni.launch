@@ -1,0 +1,4 @@
+<launch>
+  <!-- Orocos Node -->
+  <node pkg="ocl" name="omni_rtt" type="deployer-$(env OROCOS_TARGET)" args="-s $(find phantom_components)/ops_scripts/phantom_omni.ops --" output="screen"/>
+</launch>
