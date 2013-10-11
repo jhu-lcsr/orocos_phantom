@@ -17,9 +17,10 @@ include_directories(
 link_directories(${catkin_LIBRARY_DIRS})
 
 orocos_component(${PROJECT_NAME}
-  src/phantom_components.cpp
+  src/oro_phantom_hw_components.cpp
   src/phantom_omni.h
   src/phantom_omni.cpp)
+
 target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES}
   ${USE_OROCOS_LIBRARIES}

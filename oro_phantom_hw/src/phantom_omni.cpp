@@ -23,7 +23,7 @@
 
 #include "phantom_omni.h"
 
-using namespace phantom_components;
+using namespace oro_phantom_hw;
 
 bool phantom_omni_calibration()
 {

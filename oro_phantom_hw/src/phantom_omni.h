@@ -21,7 +21,7 @@
 #include <HL/hl.h>
 #include <HD/hd.h>
 
-namespace phantom_components {
+namespace oro_phantom_hw {
   class PhantomOmni : public RTT::TaskContext {
   public:
     // RTT Ports
