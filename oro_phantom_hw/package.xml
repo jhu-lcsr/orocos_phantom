@@ -42,5 +42,12 @@
   <run_depend>rtt_cartesian_trajectory_msgs</run_depend>
   <run_depend>rtt_telemanip_msgs</run_depend>
   <run_depend>rtt_geometry_msgs</run_depend>
+
+  <export>
+    <rtt_ros>
+      <plugin_depend>kdl_typekit</plugin_depend>
+      <plugin_depend>rtt_telemanip_msgs</plugin_depend>
+    </rtt_ros>
+  </export>
 </package>
 

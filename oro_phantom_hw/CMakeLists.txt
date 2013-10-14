@@ -10,6 +10,8 @@ include(${OROCOS-RTT_USE_FILE_PATH}/UseOROCOS-RTT.cmake)
 
 catkin_package(DEPENDS rtt ocl)
 
+set(CMAKE_BUILD_TPYE Debug)
+
 include_directories(
   ${USE_OROCOS_INCLUDE_DIRS}
   ${catkin_INCLUDE_DIRS})

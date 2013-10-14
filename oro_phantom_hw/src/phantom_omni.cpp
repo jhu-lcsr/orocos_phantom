@@ -3,6 +3,7 @@
 
 #include <rtt/RTT.hpp>
 #include <rtt/Component.hpp>
+#include <rtt/Logger.hpp>
 
 #include <kdl/frames_io.hpp>
 
@@ -27,6 +28,8 @@ using namespace oro_phantom_hw;
 
 bool phantom_omni_calibration()
 {
+  RTT::Logger::In("phantom_omni_calibration");
+
   int calibrationStyle;
   int supportedCalibrationStyles;
   HDErrorInfo error;
@@ -35,33 +38,33 @@ bool phantom_omni_calibration()
   if (supportedCalibrationStyles & HD_CALIBRATION_ENCODER_RESET)
   {
     calibrationStyle = HD_CALIBRATION_ENCODER_RESET;
-    ROS_INFO("HD_CALIBRATION_ENCODER_RESET...");
+    RTT::log(RTT::Info) << "HD_CALIBRATION_ENCODER_RESET..." << RTT::endlog();
   }
   if (supportedCalibrationStyles & HD_CALIBRATION_INKWELL)
   {
     calibrationStyle = HD_CALIBRATION_INKWELL;
-    ROS_INFO("HD_CALIBRATION_INKWELL...");
+    RTT::log(RTT::Info) << "HD_CALIBRATION_INKWELL..." << RTT::endlog();
   }
   if (supportedCalibrationStyles & HD_CALIBRATION_AUTO)
   {
     calibrationStyle = HD_CALIBRATION_AUTO;
-    ROS_INFO("HD_CALIBRATION_AUTO...");
+    RTT::log(RTT::Info) << "HD_CALIBRATION_AUTO..." << RTT::endlog();
   }
 
   ros::Rate rate(1.0);
   do 
   {
     hdUpdateCalibration(calibrationStyle);
-    ROS_WARN("Phantom Omni needs to be calibrated, please put the stylus in the well.");
+    RTT::log(RTT::Warning) << "Phantom Omni needs to be calibrated, please put the stylus in the well." << RTT::endlog();
     if (HD_DEVICE_ERROR(error = hdGetError()))
     {
-      ROS_ERROR_STREAM("Calibration failed: "<<error);
+      RTT::log(RTT::Error) << "Calibration failed: "<<error << RTT::endlog();
       return false;
     }
     rate.sleep();
   }   while (hdCheckCalibration() != HD_CALIBRATION_OK && ros::ok());
 
-  ROS_INFO("Phantom Omni calibration complete.");
+  RTT::log(RTT::Info) << "Phantom Omni calibration complete." << RTT::endlog();
 
   return true;
 }
@@ -90,6 +93,30 @@ static inline void framevel_to_posetwist(
   TwistKDLToMsg(fv.deriv(), pt.twist);
 }
 
+static inline void SO3toso3(
+    const KDL::Rotation &rot,
+    KDL::Vector &vec)
+{
+  KDL::Vector axis;
+  const double angle = rot.GetRotAngle(axis);
+
+  if(std::abs(angle) < 1E-6) {
+    vec.x(0);
+    vec.y(0);
+    vec.z(0);
+    return;
+  }
+
+  typedef Eigen::Map<const Eigen::Matrix<double,3,3,Eigen::RowMajor> > RotMap;
+  RotMap map = RotMap(rot.data);
+
+  Eigen::Matrix3d logR = angle/2.0/sin(angle)*(map - map.transpose());
+
+  vec.x(logR(2,1));
+  vec.y(logR(0,2));
+  vec.z(logR(1,0));
+}
+
 // Convert a 4x4 array (column-major) into a KDL frame
 static inline void array_to_frame(
     const double* array,
@@ -104,78 +131,204 @@ static inline void array_to_frame(
       KDL::Vector(array[12],array[13],array[14]));
 }
 
-HDCallbackCode HDCALLBACK phantom_omni_cb(void *pUserData)
+PhantomOmni::PhantomOmni(std::string const& name) : 
+  TaskContext(name)
+  ,initialized_(false)
+  ,broadcast_("broadcastTransform")
+  ,scale_(10.0)
+  ,damping_(0.1)
+  ,hip_support_force_(0.5)
+  ,pose_(KDL::Frame::Identity())
+  ,twist_(KDL::Twist::Zero())
+  ,force_(KDL::Vector::Zero())
 {
+  std::cout<<"PhantomOmni constructed!" <<std::endl;
+
+  // Set up RTT properties
+  this->addProperty("scale",scale_).doc("The cartesian scale.");
+  this->addProperty("damping",damping_).doc("The cartesian damping.");
+  this->addProperty("force",force_).doc("The cartesian force.");
+  this->addProperty("hip_support_force",hip_support_force_).doc("Gravity compensation force.");
+
+  // Set up RTT interface
+  this->ports()->addPort("cart_force_in",cart_force_in_);
+  this->ports()->addPort("cart_pose_out",cart_pose_out_);
+  this->ports()->addPort("cart_twist_out",cart_twist_out_);
+
+  this->ports()->addPort("telemanip_cmd_out",telemanip_cmd_out_)
+    .doc("Current pose and twist of the omni haptic interface point (HIP).");
+
+  this->addOperation("getLoopRate",
+      &PhantomOmni::get_loop_rate, this, RTT::ClientThread)
+    .doc("Get the loop rate (Hz)");
+
+  this->requires("tf")->addOperationCaller(broadcast_);
+}
+
+bool PhantomOmni::configureHook()
+{
+  RTT::Logger::In("PhantomOmni::configureHook");
   HDErrorInfo error;
 
+  // Initialize device
+  if(!initialized_) {
+    haptic_device_handle_ = hdInitDevice(HD_DEFAULT_DEVICE);
+    if(HD_DEVICE_ERROR(error = hdGetError())) {
+      ROS_ERROR_STREAM("Failed to initialize haptic device! Error: "<<error);
+      return false;
+    }
+  }
+
+  RTT::log(RTT::Info) << "Using " << hdGetString(HD_DEVICE_MODEL_TYPE) << RTT::endlog();
+
+  return true;
+}
+
+bool PhantomOmni::startHook()
+{
+  RTT::Logger::In("PhantomOmni::startHook");
+  HDErrorInfo error;
+
+  // Start the scheduler
+  hdStartScheduler(); 
+  if(HD_DEVICE_ERROR(error = hdGetError())) {
+    RTT::log(RTT::Error) << "Failed to start the HDAPI scheduler! Error: " << error << RTT::endlog();
+    return false;           
+  }
+
+  // Calibrate the joints
+  if(phantom_omni_calibration()) {
+    calibrated_ = true;
+  } else {
+    return false;
+  }
+
+  return true;
+}
+
+HDCallbackCode HDCALLBACK phantom_omni_cb(void *pUserData)
+{
   // Get poiinter to omni task
-  PhantomOmni *phantom_omni_task = static_cast<PhantomOmni*>(pUserData);
+  PhantomOmni *omni_task = static_cast<PhantomOmni*>(pUserData);
 
-  // Get the device, begin the interaction frame
-  hdBeginFrame(hdGetCurrentDevice());
+  // Trigger the task
+  if(omni_task) {
+    omni_task->hapticHook();
+  }
 
-  // Get omni orientation
+  return HD_CALLBACK_DONE;
+}
+
+void PhantomOmni::updateHook()
+{
+  // Blocking call through to the HDAPI layer
+  hdScheduleSynchronous(phantom_omni_cb, this, HD_MAX_SCHEDULER_PRIORITY);
+}
+
+bool PhantomOmni::hapticHook()
+{
+  // Rotate the frame so that the world Z points up 
+  static const KDL::Frame z_up = KDL::Frame(KDL::Rotation::RotX(M_PI/2.0));
+
+  HDErrorInfo error;
+
+  loop_period_ = RTT::os::TimeService::Instance()->secondsSince(last_loop_time_);
+  last_loop_time_ = RTT::os::TimeService::Instance()->getTicks();
+
+  // HDAPI structures
   hduVector3Dd position(0,0,0); 
   hduVector3Dd orientation(0,0,0);
-  hduVector3Dd force(0,0,0);
-
   HDdouble ee_transform[16];
 
-  hdGetDoublev(HD_CURRENT_POSITION, position);
-  if(HD_DEVICE_ERROR(error = hdGetError())) {
-    ROS_ERROR_STREAM("Failed to get position! Error: "<<error);
-  }
-  //hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES, orientation);      
+  // Read inputs
+  force_ = KDL::Vector::Zero();
+  cart_force_in_.readNewest(force_);
+
+  // Add damping
+  force_ -= damping_ * twist_.vel;
+
+  // Add gravity compensation
+  force_[2] += hip_support_force_;
+
+  ////////////////////////////////////////////////////////////////////////////
+  // Get the device, begin the interaction frame
+  hdBeginFrame(haptic_device_handle_);
+
+  // Enable force output
+  hdEnable(HD_FORCE_OUTPUT);
+
+  // Transform to y-up
+  KDL::Vector hip_force = z_up.Inverse()*force_;
+  // Set the force
+  hdSetDoublev(HD_CURRENT_FORCE, hip_force.data);
+
+  // Get omni position and orientation
   hdGetDoublev(HD_CURRENT_TRANSFORM, ee_transform);      
 
   //Get buttons
   int button_bits = 0;
   hdGetIntegerv(HD_CURRENT_BUTTONS, &button_bits);
-  bool button_1 = button_bits & HD_DEVICE_BUTTON_1;
-  bool button_2 = button_bits & HD_DEVICE_BUTTON_2;
+  button_1_ = button_bits & HD_DEVICE_BUTTON_1;
+  button_2_ = button_bits & HD_DEVICE_BUTTON_2;
 
-  // Zero out the force
-  hdSetDoublev(HD_CURRENT_FORCE, force);
   // End the interaction frame
-  hdEndFrame(hdGetCurrentDevice());
+  hdEndFrame(haptic_device_handle_);
+  ////////////////////////////////////////////////////////////////////////////
+
+  // Working variables
+  KDL::Frame pose = KDL::Frame::Identity();
+
+  // Convert to meters
+  ee_transform[12] /= 1000.0/scale_;
+  ee_transform[13] /= 1000.0/scale_;
+  ee_transform[14] /= 1000.0/scale_;
+  // Convert to KDL frame
+  KDL::Frame new_pose;
+  array_to_frame(ee_transform,new_pose);
+
+  // Transform to z-up
+  new_pose = z_up*new_pose;
+
+  // Compute twist
+  KDL::Vector dp = new_pose.p - pose_.p;
+  KDL::Rotation dM = pose_.M.Inverse()*new_pose.M;
+  KDL::Vector dw;
+  SO3toso3(dM, dw);
+
+  // Compute the new twist measurement
+  KDL::Twist new_twist = KDL::Twist(dp,dw) / loop_period_;
+
+  // Update the twist
+  static const double alpha = 0.1;
+  twist_ = (1.0-alpha)*twist_ + (alpha)*new_twist;
+
+  // Update the pose
+  pose_ = new_pose;
+
+  // Construct framevel
+  KDL::FrameVel fv = KDL::FrameVel(
+      pose_,
+      twist_);
+
+  // Write data ports
+  cart_pose_out_.write(pose_);
+  cart_twist_out_.write(twist_);
 
   static rtt_ros_tools::PeriodicThrottle pthrottle(0.019);
 
   // Publish the telemanip message
   if(pthrottle.ready()) {
-    // Working variables
-    KDL::Frame ee_transform_kdl = KDL::Frame::Identity();
-
     // Construct the telemanip message
     telemanip_msgs::TelemanipCommand cmd;
     cmd.header.frame_id = "/omni_base";
     cmd.header.stamp = ros::Time(((double)RTT::os::TimeService::Instance()->getNSecs())*1E-9);
-    cmd.grasp_opening = button_1 ? 0.0 : 1.0;
-    cmd.deadman_engaged = button_2;
+    cmd.grasp_opening = button_1_ ? 0.0 : 1.0;
+    cmd.deadman_engaged = button_2_;
     
-    // Convert to meters
-    ee_transform[12] /= 1000.0/phantom_omni_task->scale();
-    ee_transform[13] /= 1000.0/phantom_omni_task->scale();
-    ee_transform[14] /= 1000.0/phantom_omni_task->scale();
-    // Convert to KDL frame
-    array_to_frame(ee_transform,ee_transform_kdl);
-
-    // Rotate the frame so that Z points in the direction of the tip
-    KDL::Frame local_rotx = KDL::Frame(KDL::Rotation::RotX(M_PI));
-    KDL::Frame local_roty = KDL::Frame(KDL::Rotation::RotY(M_PI));
-    KDL::Frame local_rotz = KDL::Frame(KDL::Rotation::RotZ(-M_PI/2.0));
-
-    ee_transform_kdl = ee_transform_kdl*local_rotx*local_rotz;//*KDL::Frame(local_roty)*KDL::Frame(local_rotz);
-
-    // Construct framevel
-    KDL::FrameVel fv = KDL::FrameVel(
-        ee_transform_kdl,
-        KDL::Twist::Zero());
-    framevel_to_posetwist(fv, cmd.posetwist);
-
     //ROS_INFO_STREAM("GIMBALS: "<<orientation[0]<<" "<<orientation[1]<<" "<<orientation[2]);
     cmd.header.stamp = ros::Time::now();
-    phantom_omni_task->telemanip_cmd_out_.write(cmd);
+    framevel_to_posetwist(fv, cmd.posetwist);
+    telemanip_cmd_out_.write(cmd);
     
     // Broadcast a TF frame
     tf::Transform T_tf;
@@ -185,84 +338,30 @@ HDCallbackCode HDCALLBACK phantom_omni_cb(void *pUserData)
     tf::transformTFToMsg(T_tf,tform.transform);
     tform.header = cmd.header;
     tform.child_frame_id = "/omni_hip";
-    phantom_omni_task->broadcast_(tform);
+    broadcast_(tform);
   }
-
-  return HD_CALLBACK_CONTINUE;
-}
-
-PhantomOmni::PhantomOmni(std::string const& name) : 
-  TaskContext(name)
-  ,broadcast_("broadcastTransform")
-  ,scale_(10.0)
-{
-  std::cout<<"PhantomOmni constructed!" <<std::endl;
-
-  // Set up RTT properties
-  this->addProperty("scale",scale_).doc("The cartesian scale.");
-
-  // Set up RTT interface
-  this->ports()->addPort("telemanip_cmd_out",telemanip_cmd_out_)
-    .doc("Current pose and twist of the omni haptic interface point (HIP).");
-
-  this->addOperation("getLoopRate",
-      &PhantomOmni::get_loop_rate, this, RTT::OwnThread)
-    .doc("Get the loop rate (Hz)");
-
-  this->requires("tf")->addOperationCaller(broadcast_);
-}
-
-bool PhantomOmni::configureHook()
-{
-  return true;
-}
-
-bool PhantomOmni::startHook()
-{
-  HDErrorInfo error;
-
-  // Initialize device
-  haptic_device_handle_ = hdInitDevice(HD_DEFAULT_DEVICE);
-  if(HD_DEVICE_ERROR(error = hdGetError())) {
-    ROS_ERROR_STREAM("Failed to initialize haptic device! Error: "<<error);
-    return false;
-  }
-  ROS_INFO("Found %s.\n\n", hdGetString(HD_DEVICE_MODEL_TYPE));
-
-  // Enable force output
-  hdEnable(HD_FORCE_OUTPUT);
-
-  // Start the scheduler
-  hdStartScheduler(); 
-  if(HD_DEVICE_ERROR(error = hdGetError())) {
-    ROS_ERROR_STREAM("Failed to start the HDAPI scheduler! Error: "<<error);
-    return false;           
-  }
-
-  if(!phantom_omni_calibration()) {
-    return false;
-  }
-
-  // Start the callback scheduler
-  hdScheduleAsynchronous(phantom_omni_cb, this, HD_MAX_SCHEDULER_PRIORITY);
 
   return true;
-}
-
-void PhantomOmni::updateHook()
-{
 }
 
 void PhantomOmni::stopHook()
 {
-  ROS_INFO("Stopping HDAPI scheduler...");
-  hdStopScheduler();
+  RTT::Logger::In("PhantomOmni::stopHook");
+  HDErrorInfo error;
 
-  ROS_INFO("Disabling haptic device...");
-  hdDisableDevice(haptic_device_handle_);
+  RTT::log(RTT::Info) << ("Stopping HDAPI scheduler...") << RTT::endlog();
+  hdStopScheduler();
+  if(HD_DEVICE_ERROR(error = hdGetError())) {
+    RTT::log(RTT::Error) << "Failed to stop the HDAPI scheduler! Error: " << error << RTT::endlog();
+    return;
+  }
 }
 
 void PhantomOmni::cleanupHook()
 {
+  RTT::log(RTT::Info) << "Disabling haptic device..." << RTT::endlog();
+  //FIXME: This causes a segfault
+  //hdDisableDevice(haptic_device_handle_);
+  RTT::log(RTT::Warning) << "The haptic device has been left enabled." << RTT::endlog();
 }
 

@@ -40,7 +40,7 @@ tf.start()
 //*****************************************************************************
 // Create WAM 
 loadComponent("omni","oro_phantom_hw::PhantomOmni")
-setActivity("omni",0,10,ORO_SCHED_RT)
+setActivity("omni",0.001,HighestPriority,ORO_SCHED_RT)
 
 // Connect WAM state to ROS topic
 stream("omni.telemanip_cmd_out", rostopic.connection("telemanip_cmd")) 
