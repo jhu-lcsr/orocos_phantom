@@ -13,10 +13,6 @@
 #include <geometry_msgs/TwistStamped.h>
 #include <telemanip_msgs/TelemanipCommand.h>
 
-// Typekits TODO: this supposedly speeds up compile times, but it just seems to cause linker errors
-#include <geometry_msgs/typekit/Types.hpp> 
-#include <telemanip_msgs/typekit/Types.hpp> 
-
 // Sensable Headers
 #include <HL/hl.h>
 #include <HD/hd.h>
