@@ -22,7 +22,7 @@ orocos_component(${PROJECT_NAME}
   src/oro_phantom_hw_components.cpp
   src/phantom_omni.h
   src/phantom_omni.cpp)
-
+add_dependencies(${PROJECT_NAME} ${rtt_telemanip_msgs_EXPORTED_TARGETS})
 target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES}
   ${USE_OROCOS_LIBRARIES}
