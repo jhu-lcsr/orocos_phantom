@@ -136,7 +136,7 @@ PhantomOmni::PhantomOmni(std::string const& name) :
   ,initialized_(false)
   ,broadcast_("broadcastTransform")
   ,scale_(10.0)
-  ,damping_(0.1)
+  ,damping_(0.2)
   ,hip_support_force_(0.5)
   ,pose_(KDL::Frame::Identity())
   ,twist_(KDL::Twist::Zero())
@@ -184,6 +184,23 @@ bool PhantomOmni::configureHook()
   return true;
 }
 
+HDCallbackCode HDCALLBACK phantom_omni_cb(void *pUserData)
+{
+  // Get poiinter to omni task
+  PhantomOmni *omni_task = static_cast<PhantomOmni*>(pUserData);
+
+  // Trigger the task
+  if(omni_task) {
+    if(omni_task->getTaskState() == RTT::TaskContext::Running) {
+      omni_task->hapticHook();
+    } else {
+      return HD_CALLBACK_DONE;
+    }
+  }
+
+  return HD_CALLBACK_CONTINUE;
+}
+
 bool PhantomOmni::startHook()
 {
   RTT::Logger::In("PhantomOmni::startHook");
@@ -203,26 +220,14 @@ bool PhantomOmni::startHook()
     return false;
   }
 
+  // Blocking call through to the HDAPI layer
+  hdScheduleAsynchronous(phantom_omni_cb, this, HD_MAX_SCHEDULER_PRIORITY);
+
   return true;
-}
-
-HDCallbackCode HDCALLBACK phantom_omni_cb(void *pUserData)
-{
-  // Get poiinter to omni task
-  PhantomOmni *omni_task = static_cast<PhantomOmni*>(pUserData);
-
-  // Trigger the task
-  if(omni_task) {
-    omni_task->hapticHook();
-  }
-
-  return HD_CALLBACK_DONE;
 }
 
 void PhantomOmni::updateHook()
 {
-  // Blocking call through to the HDAPI layer
-  hdScheduleSynchronous(phantom_omni_cb, this, HD_MAX_SCHEDULER_PRIORITY);
 }
 
 bool PhantomOmni::hapticHook()
@@ -321,7 +326,7 @@ bool PhantomOmni::hapticHook()
     // Construct the telemanip message
     telemanip_msgs::TelemanipCommand cmd;
     cmd.header.frame_id = "/omni_base";
-    cmd.header.stamp = ros::Time(((double)RTT::os::TimeService::Instance()->getNSecs())*1E-9);
+    //cmd.header.stamp = ros::Time(((double)RTT::os::TimeService::Instance()->getNSecs())*1E-9);
     cmd.grasp_opening = button_1_ ? 0.0 : 1.0;
     cmd.deadman_engaged = button_2_;
     
