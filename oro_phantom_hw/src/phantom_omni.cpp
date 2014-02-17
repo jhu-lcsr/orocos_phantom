@@ -19,7 +19,6 @@
 #include <tf/tf.h>
 #include <tf_conversions/tf_kdl.h>
 
-#include <rtt_ros_tools/time.h>
 #include <rtt_ros_tools/throttles.h>
 
 #include "phantom_omni.h"
