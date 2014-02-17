@@ -1,0 +1,8 @@
+<launch>
+  <!-- Orocos Deployer Node -->
+  <include file="$(find rtt_ros)/launch/deployer.launch">
+    <arg name="DEPLOYER_ARGS" value="-s $(find oro_phantom_hw)/ops_scripts/phantom_omni.ops"/>
+    <arg name="LOG_LEVEL" value="debug"/>
+    <arg name="DEBUG" value="false"/>
+  </include>
+</launch>
