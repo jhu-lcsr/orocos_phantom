@@ -8,6 +8,8 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(OROCOS-RTT REQUIRED)
 include(${OROCOS-RTT_USE_FILE_PATH}/UseOROCOS-RTT.cmake)
 
+orocos_use_package(kdl_typekit)
+
 catkin_package(DEPENDS rtt ocl)
 
 set(CMAKE_BUILD_TPYE Debug)
