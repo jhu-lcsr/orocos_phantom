@@ -44,7 +44,7 @@ loadComponent("omni","oro_phantom_hw::PhantomOmni")
 setActivity("omni",0,0,ORO_SCHED_OTHER)
 
 // Connect WAM state to ROS topic
-stream("omni.telemanip_cmd_out", rostopic.connection("telemanip_cmd")) 
+stream("omni.telemanip_cmd_out", ros.topic("telemanip_cmd")) 
 
 connectServices("omni","tf")
 

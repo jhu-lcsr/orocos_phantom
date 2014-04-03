@@ -20,6 +20,7 @@
 #include <tf_conversions/tf_kdl.h>
 
 #include <rtt_ros_tools/throttles.h>
+#include <rtt_rosclock/rtt_rosclock.h>
 
 #include "phantom_omni.h"
 
@@ -330,7 +331,7 @@ bool PhantomOmni::hapticHook()
     cmd.deadman_engaged = button_2_;
     
     //ROS_INFO_STREAM("GIMBALS: "<<orientation[0]<<" "<<orientation[1]<<" "<<orientation[2]);
-    cmd.header.stamp = ros::Time::now();
+    cmd.header.stamp = rtt_rosclock::host_now();
     framevel_to_posetwist(fv, cmd.posetwist);
     telemanip_cmd_out_.write(cmd);
     
